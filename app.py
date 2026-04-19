@@ -121,4 +121,15 @@ if uploaded_file:
             step = 0
             for f in fast_r:
                 row = []
-                for s in slow_
+                for s in slow_r:
+                    r = run_backtest(df_raw, capitale, rr, comm, slip, asset, f, s)
+                    row.append(round(r['balance'] - capitale, 2))
+                    step += 1
+                    bar.progress(step / total_steps)
+                grid.append(row)
+            
+            heatmap_df = pd.DataFrame(grid, index=[f"EMA {f}" for f in fast_r], columns=[f"EMA {s}" for s in slow_r])
+            st.table(heatmap_df.style.background_gradient(cmap='RdYlGn'))
+
+else:
+    st.warning("⚠️ Carica un file CSV per sbloccare le funzionalità di analisi.")
