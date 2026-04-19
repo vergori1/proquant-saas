@@ -3,11 +3,19 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 
-# --- MOTORE DI CALCOLO UNIFICATO ---
+# --- MOTORE QUANTITATIVO BLINDATO ---
 def run_backtest(df, capitale, rr, comm, slip, asset, fast=2, slow=20):
     balance = capitale
     equity = [capitale]
-    pos = None
+    
+    # Variabili separate per distruggere l'errore "string indices"
+    pos_type = None
+    pos_sl = 0.0
+    pos_tp = 0.0
+    pos_risk = 0.0
+    pos_comm = 0.0
+    pos_slip = 0.0
+    
     wins, losses = 0, 0
     
     if "XAUUSD" in asset:
@@ -15,7 +23,7 @@ def run_backtest(df, capitale, rr, comm, slip, asset, fast=2, slow=20):
     else: # USDJPY
         VALORE_PUNTO, point, SOGLIA_ATR, RISCHIO = 1000.0, 0.001, 0, 0.005
 
-    # Indicatori
+    # Calcolo Indicatori
     df['ema_fast'] = df['close'].ewm(span=fast, adjust=False).mean()
     df['ema_slow'] = df['close'].ewm(span=slow, adjust=False).mean()
     df['tr'] = np.maximum(df['high'] - df['low'], np.maximum(abs(df['high'] - df['close'].shift(1)), abs(df['low'] - df['close'].shift(1))))
@@ -24,44 +32,66 @@ def run_backtest(df, capitale, rr, comm, slip, asset, fast=2, slow=20):
     asia_h, asia_l, session_done = 0.0, 9999.0, False
 
     for i in range(20, len(df)):
-        if pos:
-            if pos['type'] == 'buy':
-                if df['low'].iloc[i] <= pos['sl']:
-                    balance -= (pos['risk'] + pos['comm'] + pos['slip']); pos = None; losses += 1
-                elif df['high'].iloc[i] >= pos['tp']:
-                    balance += (pos['risk'] * rr - pos['comm'] - pos['slip']); pos = None; wins += 1
-            elif pos['type'] == 'sell':
-                if df['high'].iloc[i] >= pos['sl']:
-                    balance -= (pos['risk'] + pos['comm'] + pos['slip']); pos = None; losses += 1
-                elif df['low'].iloc[i] <= pos['tp']:
-                    balance += (pos['risk'] * rr - pos['comm'] - pos['slip']); pos = None; wins += 1
+        # 1. Chiusura Posizioni
+        if pos_type is not None:
+            if pos_type == 'buy':
+                if df['low'].iloc[i] <= pos_sl:
+                    balance -= (pos_risk + pos_comm + pos_slip)
+                    pos_type = None
+                    losses += 1
+                elif df['high'].iloc[i] >= pos_tp:
+                    balance += (pos_risk * rr - pos_comm - pos_slip)
+                    pos_type = None
+                    wins += 1
+            elif pos_type == 'sell':
+                if df['high'].iloc[i] >= pos_sl:
+                    balance -= (pos_risk + pos_comm + pos_slip)
+                    pos_type = None
+                    losses += 1
+                elif df['low'].iloc[i] <= pos_tp:
+                    balance += (pos_risk * rr - pos_comm - pos_slip)
+                    pos_type = None
+                    wins += 1
         
-        if not pos:
+        # 2. Apertura Posizioni
+        if pos_type is None:
             if "XAUUSD" in asset:
                 if df['atr'].iloc[i-1] >= SOGLIA_ATR:
                     sl_dist = STOP_PIPS * 10 * point
                     risk_amt = balance * RISCHIO
                     lotti = max(0.01, round(risk_amt / (sl_dist * VALORE_PUNTO), 2))
                     c_slip = slip * point * VALORE_PUNTO * lotti
+                    
                     if df['ema_fast'].iloc[i-1] > df['ema_slow'].iloc[i-1] and df['ema_fast'].iloc[i-2] <= df['ema_slow'].iloc[i-2]:
-                        pos = {'type':'buy','sl':df['open'].iloc[i]-sl_dist,'tp':df['open'].iloc[i]+sl_dist*rr,'risk':risk_amt,'comm':lotti*comm,'slip':c_slip}
+                        pos_type, pos_sl, pos_tp = 'buy', df['open'].iloc[i]-sl_dist, df['open'].iloc[i]+sl_dist*rr
+                        pos_risk, pos_comm, pos_slip = risk_amt, lotti*comm, c_slip
                     elif df['ema_fast'].iloc[i-1] < df['ema_slow'].iloc[i-1] and df['ema_fast'].iloc[i-2] >= df['ema_slow'].iloc[i-2]:
-                        pos = {'type':'sell','sl':df['open'].iloc[i]+sl_dist,'tp':df['open'].iloc[i]-sl_dist*rr,'risk':risk_amt,'comm':lotti*comm,'slip':c_slip}
-            else: # USDJPY
+                        pos_type, pos_sl, pos_tp = 'sell', df['open'].iloc[i]+sl_dist, df['open'].iloc[i]-sl_dist*rr
+                        pos_risk, pos_comm, pos_slip = risk_amt, lotti*comm, c_slip
+            
+            else: # USDJPY Breakout
                 orario = str(df['time'].iloc[i])[:5]
                 if orario == '00:00': asia_h, asia_l, session_done = 0.0, 9999.0, False
                 if '00:00' <= orario < '08:00':
-                    asia_h = max(asia_h, df['high'].iloc[i]); asia_l = min(asia_l, df['low'].iloc[i])
+                    asia_h = max(asia_h, df['high'].iloc[i])
+                    asia_l = min(asia_l, df['low'].iloc[i])
                 if orario >= '08:00' and not session_done and asia_h > 0:
-                    sl_range = asia_h - asia_low if 'asia_low' in locals() else asia_h - asia_l
+                    sl_range = asia_h - asia_l
                     risk_amt = balance * RISCHIO
                     lotti = max(0.01, round(risk_amt / (sl_range * VALORE_PUNTO), 2)) if sl_range > 0 else 0.01
                     c_slip = slip * point * VALORE_PUNTO * lotti
+                    
                     if df['high'].iloc[i] > asia_h:
-                        pos = {'type':'buy','sl':asia_l,'tp':asia_h+sl_range*rr,'risk':risk_amt,'comm':lotti*comm,'slip':c_slip}; session_done = True
+                        pos_type, pos_sl, pos_tp = 'buy', asia_l, asia_h+sl_range*rr
+                        pos_risk, pos_comm, pos_slip = risk_amt, lotti*comm, c_slip
+                        session_done = True
                     elif df['low'].iloc[i] < asia_l:
-                        pos = {'type':'sell','sl':asia_h,'tp':asia_l-sl_range*rr,'risk':risk_amt,'comm':lotti*comm,'slip':c_slip}; session_done = True
+                        pos_type, pos_sl, pos_tp = 'sell', asia_h, asia_l-sl_range*rr
+                        pos_risk, pos_comm, pos_slip = risk_amt, lotti*comm, c_slip
+                        session_done = True
+                        
         equity.append(balance)
+        
     return {"balance": balance, "equity": equity, "wins": wins, "losses": losses}
 
 # --- INTERFACCIA PROFESSIONALE ---
@@ -77,24 +107,25 @@ with st.sidebar:
     slip = st.number_input("Slippage Simulato (Punti)", value=30)
     comm = st.number_input("Commissione/Lotto (€)", value=7.0)
     st.divider()
-    st.caption("v2.0 - Cloud Certified")
+    st.caption("v2.1 - Core Blindato")
 
-# Caricamento File
+# Main Content
 st.title("🛡️ Piattaforma di Validazione Quantitativa")
 uploaded_file = st.file_uploader("Trascina qui lo storico CSV di MetaTrader 5", type="csv")
 
 if uploaded_file:
+    # Parsing sicuro del CSV
     df_raw = pd.read_csv(uploaded_file, sep='\t')
-    df_raw.columns = [col.replace('<', '').replace('>', '').lower() for col in df_raw.columns]
+    df_raw.columns = [str(col).replace('<', '').replace('>', '').lower().strip() for col in df_raw.columns]
 
-    # TAB SYSTEM (Come richiesto)
     tab1, tab2 = st.tabs(["📊 Analisi Singola", "🔥 Mappa di Calore AI"])
 
     with tab1:
         if st.button("ESEGUI BACKTEST", type="primary", use_container_width=True):
-            res = run_backtest(df_raw, capitale, rr, comm, slip, asset)
+            with st.spinner("Calcolo delle matrici in corso..."):
+                res = run_backtest(df_raw, capitale, rr, comm, slip, asset)
             
-            # Metrics Row
+            # Box Metriche
             m1, m2, m3, m4 = st.columns(4)
             profit = res['balance'] - capitale
             m1.metric("Profitto Netto", f"{round(profit, 2)} €", delta=f"{round(profit, 2)} €")
@@ -104,10 +135,11 @@ if uploaded_file:
             m3.metric("Win Rate", f"{round(wr, 1)} %")
             m4.metric("Trade Totali", total_t)
 
-            # Grafico Plotly (Anti-Bug)
+            # Grafico Interattivo Plotly
+            st.subheader("Equity Curve (Stress-Tested)")
             fig = go.Figure()
             fig.add_trace(go.Scatter(y=res['equity'], mode='lines', name='Equity', line=dict(color='#2ecc71', width=2)))
-            fig.update_layout(title='Equity Curve (Stress-Tested)', xaxis_title='Numero di Trade', yaxis_title='Saldo (€)', template="plotly_dark")
+            fig.update_layout(xaxis_title='Numero di Trade', yaxis_title='Saldo (€)', template="plotly_dark", height=400)
             st.plotly_chart(fig, use_container_width=True)
 
     with tab2:
@@ -119,6 +151,7 @@ if uploaded_file:
             bar = st.progress(0)
             total_steps = len(fast_r) * len(slow_r)
             step = 0
+            
             for f in fast_r:
                 row = []
                 for s in slow_r:
@@ -129,7 +162,7 @@ if uploaded_file:
                 grid.append(row)
             
             heatmap_df = pd.DataFrame(grid, index=[f"EMA {f}" for f in fast_r], columns=[f"EMA {s}" for s in slow_r])
-            st.table(heatmap_df.style.background_gradient(cmap='RdYlGn'))
+            st.dataframe(heatmap_df.style.background_gradient(cmap='RdYlGn'), use_container_width=True)
 
 else:
-    st.warning("⚠️ Carica un file CSV per sbloccare le funzionalità di analisi.")
+    st.info("⚠️ Carica un file CSV per sbloccare le funzionalità di analisi.")
