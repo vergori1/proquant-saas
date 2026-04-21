@@ -80,7 +80,7 @@ def run_backtest(df, asset, config):
                     pos_risk, pos_comm, pos_slip = risk_amt, lotti * comm, c_slip
 
     # --------------------------------------------------------------
-    # 2. LOGICA USDJPY (Breakout Asiatico MQL5)
+    # 2. LOGICA USDJPY (Breakout Asiatico MQL5 Clone)
     # --------------------------------------------------------------
     else:
         start_h = config.get("start_h", 3)
@@ -90,7 +90,6 @@ def run_backtest(df, asset, config):
         rischio_pct = config.get("risk_pct", 0.4) / 100.0
 
         VALORE_PUNTO, point = 1000.0, 0.001
-        df['time_dt'] = pd.to_datetime(df['time'])
         
         pos_type, pos_entry, pos_sl = None, 0.0, 0.0
         pos_comm, pos_slip, pos_lots = 0.0, 0.0, 0.0
@@ -100,6 +99,7 @@ def run_backtest(df, asset, config):
         current_day = -1
 
         for i in range(20, len(df)):
+            # Utilizziamo la colonna time_dt corretta creata in fase di lettura
             cur_dt = df['time_dt'].iloc[i]
             h, dow, month = cur_dt.hour, cur_dt.dayofweek, cur_dt.month
 
@@ -135,13 +135,14 @@ def run_backtest(df, asset, config):
             drawdown = (peak - balance) / peak * 100 if peak > 0 else 0
             max_dd = max(max_dd, drawdown)
 
-            # Calcolo Range
+            # Calcolo Range Asiatico
             if start_h <= h < end_h:
                 asia_h = max(asia_h, df['high'].iloc[i])
                 asia_l = min(asia_l, df['low'].iloc[i])
 
-            # Apertura Breakout
+            # Apertura Breakout (esatta replica logica MQL5)
             if pos_type is None and end_h <= h < exit_h and not session_done:
+                # Python dow: 2=Mer, 3=Gio, 4=Ven
                 if month in [3, 5, 6, 7, 8, 9, 10, 11, 12] and dow in [2, 3, 4]:
                     if asia_h > 0 and asia_l < 9999.0:
                         range_hl = asia_h - asia_l
@@ -210,7 +211,7 @@ with st.sidebar:
         config["sl_ratio"] = st.slider("SL Ratio (Restringimento Box)", 0.0, 1.0, 0.2, step=0.05)
         config["risk_pct"] = st.number_input("Rischio per Trade (%)", value=0.4, step=0.1)
 
-    st.caption("v5.0 - Dynamic Parameter Injection")
+    st.caption("v5.1 - Date Parser Fix + Dynamic Injection")
 
 # Corpo Centrale
 st.title("🛡️ Piattaforma di Validazione Quantitativa")
@@ -219,6 +220,15 @@ uploaded_file = st.file_uploader("Trascina qui lo storico CSV di MetaTrader 5", 
 if uploaded_file:
     df_raw = pd.read_csv(uploaded_file, sep='\t')
     df_raw.columns = [str(col).replace('<', '').replace('>', '').lower().strip() for col in df_raw.columns]
+
+    # SOLUZIONE AL BUG DEL PARSER DATE/TIME
+    if 'date' in df_raw.columns and 'time' in df_raw.columns:
+        df_raw['time_dt'] = pd.to_datetime(df_raw['date'] + ' ' + df_raw['time'])
+    elif 'time' in df_raw.columns:
+        df_raw['time_dt'] = pd.to_datetime(df_raw['time'])
+    else:
+        st.error("Formato data/ora non riconosciuto. Assicurati che il CSV esportato da MT5 abbia le colonne DATE e TIME.")
+        st.stop()
 
     tab1, tab2 = st.tabs(["📊 Analisi Singola", "🔬 Avanzate (Presto Disponibili)"])
 
