@@ -2,13 +2,13 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import plotly.express as px
 
 # ==============================================================
 # --- MOTORE QUANTITATIVO (Completamente Dinamico) ---
 # ==============================================================
 
 def run_backtest(df, asset, config):
-    # Parametri Comuni
     capitale = config.get("capitale", 1000)
     comm = config.get("comm", 7.0)
     slip = config.get("slip", 30)
@@ -43,7 +43,6 @@ def run_backtest(df, asset, config):
         df['atr'] = df['tr'].rolling(window=14).mean()
 
         for i in range(20, len(df)):
-            # Chiusura
             if pos_type is not None:
                 if pos_type == 'buy':
                     if df['low'].iloc[i] <= pos_sl:
@@ -65,7 +64,6 @@ def run_backtest(df, asset, config):
             drawdown = (peak - balance) / peak * 100 if peak > 0 else 0
             max_dd = max(max_dd, drawdown)
 
-            # Apertura
             if pos_type is None and df['atr'].iloc[i - 1] >= soglia_atr:
                 sl_dist = stop_pips * 10 * point
                 risk_amt = balance * rischio_pct
@@ -90,16 +88,13 @@ def run_backtest(df, asset, config):
         rischio_pct = config.get("risk_pct", 0.4) / 100.0
 
         VALORE_PUNTO, point = 1000.0, 0.001
-        
         pos_type, pos_entry, pos_sl = None, 0.0, 0.0
         pos_comm, pos_slip, pos_lots = 0.0, 0.0, 0.0
-        
         asia_h, asia_l = 0.0, 9999.0
         session_done = False
         current_day = -1
 
         for i in range(20, len(df)):
-            # Utilizziamo la colonna time_dt corretta creata in fase di lettura
             cur_dt = df['time_dt'].iloc[i]
             h, dow, month = cur_dt.hour, cur_dt.dayofweek, cur_dt.month
 
@@ -108,7 +103,6 @@ def run_backtest(df, asset, config):
                 session_done = False
                 current_day = cur_dt.day
 
-            # Chiusura
             if pos_type is not None:
                 if h >= exit_h: 
                     exit_price = df['open'].iloc[i]
@@ -135,18 +129,14 @@ def run_backtest(df, asset, config):
             drawdown = (peak - balance) / peak * 100 if peak > 0 else 0
             max_dd = max(max_dd, drawdown)
 
-            # Calcolo Range Asiatico
             if start_h <= h < end_h:
                 asia_h = max(asia_h, df['high'].iloc[i])
                 asia_l = min(asia_l, df['low'].iloc[i])
 
-            # Apertura Breakout (esatta replica logica MQL5)
             if pos_type is None and end_h <= h < exit_h and not session_done:
-                # Python dow: 2=Mer, 3=Gio, 4=Ven
                 if month in [3, 5, 6, 7, 8, 9, 10, 11, 12] and dow in [2, 3, 4]:
                     if asia_h > 0 and asia_l < 9999.0:
                         range_hl = asia_h - asia_l
-
                         if df['high'].iloc[i] >= asia_h:
                             pos_type = 'buy'
                             pos_entry = max(df['open'].iloc[i], asia_h)
@@ -156,7 +146,6 @@ def run_backtest(df, asset, config):
                             pos_lots = max(0.01, round(risk_amt / (sl_dist * point * VALORE_PUNTO), 2)) if sl_dist > 0 else 0.01
                             pos_comm, pos_slip = pos_lots * comm, slip * point * VALORE_PUNTO * pos_lots
                             session_done = True
-                            
                         elif df['low'].iloc[i] <= asia_l:
                             pos_type = 'sell'
                             pos_entry = min(df['open'].iloc[i], asia_l)
@@ -180,8 +169,6 @@ def run_backtest(df, asset, config):
 # ==============================================================
 
 st.set_page_config(page_title="ProQuant SaaS", layout="wide", page_icon="🏦")
-
-# Costruzione Configurazione Dinamica
 config = {}
 
 with st.sidebar:
@@ -211,9 +198,8 @@ with st.sidebar:
         config["sl_ratio"] = st.slider("SL Ratio (Restringimento Box)", 0.0, 1.0, 0.2, step=0.05)
         config["risk_pct"] = st.number_input("Rischio per Trade (%)", value=0.4, step=0.1)
 
-    st.caption("v5.1 - Date Parser Fix + Dynamic Injection")
+    st.caption("v6.0 - Advanced Tools Restored")
 
-# Corpo Centrale
 st.title("🛡️ Piattaforma di Validazione Quantitativa")
 uploaded_file = st.file_uploader("Trascina qui lo storico CSV di MetaTrader 5", type="csv")
 
@@ -221,17 +207,18 @@ if uploaded_file:
     df_raw = pd.read_csv(uploaded_file, sep='\t')
     df_raw.columns = [str(col).replace('<', '').replace('>', '').lower().strip() for col in df_raw.columns]
 
-    # SOLUZIONE AL BUG DEL PARSER DATE/TIME
+    # FIX DATE PARSER
     if 'date' in df_raw.columns and 'time' in df_raw.columns:
         df_raw['time_dt'] = pd.to_datetime(df_raw['date'] + ' ' + df_raw['time'])
     elif 'time' in df_raw.columns:
         df_raw['time_dt'] = pd.to_datetime(df_raw['time'])
     else:
-        st.error("Formato data/ora non riconosciuto. Assicurati che il CSV esportato da MT5 abbia le colonne DATE e TIME.")
+        st.error("Formato data/ora non riconosciuto.")
         st.stop()
 
-    tab1, tab2 = st.tabs(["📊 Analisi Singola", "🔬 Avanzate (Presto Disponibili)"])
+    tab1, tab2, tab3 = st.tabs(["📊 Analisi Singola", "🔲 Grid Search EMA", "🔬 Walk-Forward Validation"])
 
+    # --- TAB 1: BACKTEST SINGOLO ---
     with tab1:
         if st.button("ESEGUI BACKTEST", type="primary", use_container_width=True):
             with st.spinner("Calcolo in corso..."):
@@ -247,13 +234,98 @@ if uploaded_file:
             m3.metric("Win Rate", f"{round(wr, 1)} %")
             m4.metric("Trade Totali", total_t)
             m5.metric("Max Drawdown", f"{res['max_drawdown']} %", delta=f"-{res['max_drawdown']} %", delta_color="inverse")
-            
-            pf = res['profit_factor']
-            m6.metric("Profit Factor", f"{pf}" if pf != float('inf') else "∞", delta="buono" if pf >= 1.5 else "basso", delta_color="normal" if pf >= 1.5 else "inverse")
+            m6.metric("Profit Factor", f"{res['profit_factor']}" if res['profit_factor'] != float('inf') else "∞")
 
             fig = go.Figure()
             fig.add_trace(go.Scatter(y=res['equity'], mode='lines', name='Equity', line=dict(color='#2ecc71', width=2), fill='tozeroy', fillcolor='rgba(46,204,113,0.08)'))
             fig.update_layout(xaxis_title='Candele', yaxis_title='Saldo (€)', template="plotly_dark", height=400)
             st.plotly_chart(fig, use_container_width=True)
+
+    # --- TAB 2: GRID SEARCH ---
+    with tab2:
+        if "USDJPY" in asset:
+            st.warning("La Grid Search EMA è disabilitata per l'algoritmo USDJPY (Breakout Orario).")
+        else:
+            st.subheader("Ottimizzazione Multidimensionale (Medie Mobili)")
+            c1, c2 = st.columns(2)
+            with c1:
+                fast_min = st.number_input("EMA Veloce Min", value=1)
+                fast_max = st.number_input("EMA Veloce Max", value=5)
+            with c2:
+                slow_min = st.number_input("EMA Lenta Min", value=15)
+                slow_max = st.number_input("EMA Lenta Max", value=25)
+
+            if st.button("Avvia Grid Search", use_container_width=True):
+                with st.spinner("Analisi matrice in corso..."):
+                    results = []
+                    for f in range(fast_min, fast_max + 1):
+                        for s in range(slow_min, slow_max + 1):
+                            if f >= s: continue # Salta logiche impossibili
+                            temp_config = config.copy()
+                            temp_config["ema_fast"] = f
+                            temp_config["ema_slow"] = s
+                            res = run_backtest(df_raw, asset, temp_config)
+                            results.append({"Fast": f, "Slow": s, "Profitto": res['balance'] - config['capitale']})
+                    
+                    if results:
+                        res_df = pd.DataFrame(results)
+                        pivot_df = res_df.pivot(index="Fast", columns="Slow", values="Profitto")
+                        
+                        fig_heat = px.imshow(pivot_df, text_auto=".2f", color_continuous_scale="RdYlGn", 
+                                             title="Mappa di Calore: Profitti Netti (€)",
+                                             labels=dict(x="EMA Lenta", y="EMA Veloce", color="Profitto"))
+                        fig_heat.update_layout(template="plotly_dark")
+                        st.plotly_chart(fig_heat, use_container_width=True)
+
+    # --- TAB 3: WALK-FORWARD VALIDATION ---
+    with tab3:
+        if "USDJPY" in asset:
+            st.warning("Walk-Forward su Parametri EMA non disponibile per USDJPY.")
+        else:
+            st.subheader("Test di Robustezza (Out-of-Sample)")
+            st.write("Divide lo storico in due parti: allena l'algoritmo sulla prima parte e lo testa sulla seconda (dati mai visti).")
+            split_pct = st.slider("Percentuale Dati Training (In-Sample)", 50, 90, 70)
+            
+            if st.button("Esegui Walk-Forward", use_container_width=True):
+                with st.spinner("Addestramento e validazione in corso..."):
+                    split_idx = int(len(df_raw) * (split_pct / 100))
+                    df_train = df_raw.iloc[:split_idx].copy()
+                    df_test = df_raw.iloc[split_idx:].copy()
+
+                    # 1. Training (Trova migliori parametri)
+                    best_profit = -99999
+                    best_f, best_s = config['ema_fast'], config['ema_slow']
+                    
+                    for f in range(2, 6):
+                        for s in range(15, 25):
+                            if f >= s: continue
+                            tc = config.copy()
+                            tc["ema_fast"], tc["ema_slow"] = f, s
+                            res_train = run_backtest(df_train, asset, tc)
+                            prof = res_train['balance'] - config['capitale']
+                            if prof > best_profit:
+                                best_profit = prof
+                                best_f, best_s = f, s
+
+                    # 2. Testing (Prova parametri su dati nuovi)
+                    st.success(f"🏆 Ottimizzazione In-Sample completata. Miglior Setup: EMA Veloce {best_f} / EMA Lenta {best_s}")
+                    
+                    tc_test = config.copy()
+                    tc_test["ema_fast"], tc_test["ema_slow"] = best_f, best_s
+                    res_test = run_backtest(df_test, asset, tc_test)
+                    test_profit = res_test['balance'] - config['capitale']
+
+                    st.markdown("### Risultati Out-of-Sample (Il Verdetto)")
+                    if test_profit > 0 and res_test['profit_factor'] >= 1.2:
+                        st.success(f"✅ Strategia ROBUSTA: profittevole anche su {100 - split_pct}% di dati mai visti. Profit Factor: {res_test['profit_factor']}")
+                    elif test_profit > 0:
+                        st.warning("⚠️ Strategia MARGINALE: profittevole in test ma con Profit Factor basso.")
+                    else:
+                        st.error("❌ OVERFITTING RILEVATO: la strategia è profittevole in training ma perdente nel futuro. Non operare live.")
+
+                    fig2 = go.Figure()
+                    fig2.add_trace(go.Scatter(y=res_test['equity'], mode='lines', name='Equity Test', line=dict(color='#3498db', width=2), fill='tozeroy', fillcolor='rgba(52,152,219,0.08)'))
+                    fig2.update_layout(xaxis_title='Candele', yaxis_title='Saldo (€)', template="plotly_dark", height=350)
+                    st.plotly_chart(fig2, use_container_width=True)
 else:
     st.info("⚠️ Carica un file CSV esportato da MetaTrader 5 per sbloccare le funzionalità di analisi.")
